@@ -10,6 +10,8 @@ struct HeatmapDayInfo: Equatable {
 
 struct MenuBarView: View {
     @ObservedObject var reader: StatsReader
+    @ObservedObject var openCodeReader: OpenCodeReader
+    @Binding var provider: StatsProvider
     @State private var hoveredDay: HeatmapDayInfo?
     @State private var showCostBreakdown = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -23,25 +25,195 @@ struct MenuBarView: View {
     private let accentDim = Color(red: 0.25, green: 0.4, blue: 0.75)
     private let warm = Color(red: 1.0, green: 0.75, blue: 0.35)
     private let green = Color(red: 0.3, green: 0.85, blue: 0.5)
+    private let openCodeAccent = Color(red: 0.9, green: 0.5, blue: 0.2)
+
+    // MARK: - Unified data accessors
+
+    private var activeAccent: Color {
+        provider == .openCode ? openCodeAccent : accent
+    }
+
+    private var activeTodayTokens: Int {
+        switch provider {
+        case .claudeCode: return reader.todayTotalTokens
+        case .openCode: return openCodeReader.todayTotalTokens
+        case .all: return reader.todayTotalTokens + openCodeReader.todayTotalTokens
+        }
+    }
+
+    private var activeTodayMessages: Int {
+        switch provider {
+        case .claudeCode: return reader.todayMessages
+        case .openCode: return openCodeReader.todayMessages
+        case .all: return reader.todayMessages + openCodeReader.todayMessages
+        }
+    }
+
+    private var activeTodaySessions: Int {
+        switch provider {
+        case .claudeCode: return reader.todaySessions
+        case .openCode: return openCodeReader.todaySessions
+        case .all: return reader.todaySessions + openCodeReader.todaySessions
+        }
+    }
+
+    private var activeTodayTopModel: String? {
+        switch provider {
+        case .claudeCode: return reader.todayTopModel
+        case .openCode: return openCodeReader.todayTopModel
+        case .all: return reader.todayTopModel ?? openCodeReader.todayTopModel
+        }
+    }
+
+    private var activeAllTimeTokens: Int {
+        switch provider {
+        case .claudeCode: return reader.allTimeTokens
+        case .openCode: return openCodeReader.allTimeTokens
+        case .all: return reader.allTimeTokens + openCodeReader.allTimeTokens
+        }
+    }
+
+    private var activeTotalMessages: Int {
+        switch provider {
+        case .claudeCode: return reader.stats?.totalMessages ?? 0
+        case .openCode: return openCodeReader.stats?.totalMessages ?? 0
+        case .all: return (reader.stats?.totalMessages ?? 0) + (openCodeReader.stats?.totalMessages ?? 0)
+        }
+    }
+
+    private var activeTotalSessions: Int {
+        switch provider {
+        case .claudeCode: return reader.stats?.totalSessions ?? 0
+        case .openCode: return openCodeReader.stats?.totalSessions ?? 0
+        case .all: return (reader.stats?.totalSessions ?? 0) + (openCodeReader.stats?.totalSessions ?? 0)
+        }
+    }
+
+    private var activeModelBreakdown: [(model: String, tokens: Int)] {
+        switch provider {
+        case .claudeCode: return reader.modelBreakdown
+        case .openCode: return openCodeReader.modelBreakdown
+        case .all:
+            var map: [String: Int] = [:]
+            for entry in reader.modelBreakdown { map[entry.model, default: 0] += entry.tokens }
+            for entry in openCodeReader.modelBreakdown { map[entry.model, default: 0] += entry.tokens }
+            return map.map { (model: $0.key, tokens: $0.value) }
+                .filter { $0.tokens > 0 }
+                .sorted { $0.tokens > $1.tokens }
+        }
+    }
+
+    private var activeDailyTokenMap: [String: Int] {
+        switch provider {
+        case .claudeCode: return reader.dailyTokenMap
+        case .openCode: return openCodeReader.dailyTokenMap
+        case .all:
+            var map = reader.dailyTokenMap
+            for (date, tokens) in openCodeReader.dailyTokenMap {
+                map[date, default: 0] += tokens
+            }
+            return map
+        }
+    }
+
+    private var activeDailyActivityMap: [String: DailyActivity] {
+        switch provider {
+        case .claudeCode: return reader.dailyActivityMap
+        case .openCode: return openCodeReader.dailyActivityMap
+        case .all:
+            var map = reader.dailyActivityMap
+            for (date, activity) in openCodeReader.dailyActivityMap {
+                if let existing = map[date] {
+                    map[date] = DailyActivity(
+                        date: date,
+                        messageCount: existing.messageCount + activity.messageCount,
+                        sessionCount: existing.sessionCount + activity.sessionCount,
+                        toolCallCount: existing.toolCallCount
+                    )
+                } else {
+                    map[date] = activity
+                }
+            }
+            return map
+        }
+    }
+
+    private var activeEstimatedCost: Double {
+        switch provider {
+        case .claudeCode: return reader.estimatedTotalCost
+        case .openCode: return openCodeReader.estimatedTotalCost
+        case .all: return reader.estimatedTotalCost + openCodeReader.estimatedTotalCost
+        }
+    }
+
+    private var activeCostByModel: [(model: String, cost: Double)] {
+        switch provider {
+        case .claudeCode: return reader.costByModel
+        case .openCode: return openCodeReader.costByModel
+        case .all:
+            var map: [String: Double] = [:]
+            for entry in reader.costByModel { map[entry.model, default: 0] += entry.cost }
+            for entry in openCodeReader.costByModel { map[entry.model, default: 0] += entry.cost }
+            return map.map { (model: $0.key, cost: $0.value) }
+                .filter { $0.cost > 0 }
+                .sorted { $0.cost > $1.cost }
+        }
+    }
+
+    private var activeCostBreakdown: [StatsReader.ModelCostBreakdown] {
+        switch provider {
+        case .claudeCode: return reader.detailedCostBreakdown
+        case .openCode: return openCodeReader.detailedCostBreakdown
+        case .all: return reader.detailedCostBreakdown + openCodeReader.detailedCostBreakdown
+        }
+    }
+
+    private var activeStreak: Int {
+        switch provider {
+        case .claudeCode: return reader.currentStreak
+        case .openCode: return openCodeReader.currentStreak
+        case .all:
+            // Merge all dates for combined streak
+            var dates = Set<String>()
+            if let activity = reader.stats?.dailyActivity {
+                for entry in activity { dates.insert(entry.date) }
+            }
+            if let tokens = reader.stats?.dailyModelTokens {
+                for entry in tokens { dates.insert(entry.date) }
+            }
+            if reader.liveTokens.messageCount > 0 {
+                dates.insert(reader.todayDateString)
+            }
+            if let activity = openCodeReader.stats?.dailyActivity {
+                for entry in activity { dates.insert(entry.date) }
+            }
+            if let tokens = openCodeReader.stats?.dailyModelTokens {
+                for entry in tokens { dates.insert(entry.date) }
+            }
+            guard !dates.isEmpty else { return 0 }
+
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            let cal = Calendar.current
+            var streak = 0
+            var checkDate = Date()
+            let todayStr = fmt.string(from: checkDate)
+            if !dates.contains(todayStr) {
+                checkDate = cal.date(byAdding: .day, value: -1, to: checkDate)!
+                if !dates.contains(fmt.string(from: checkDate)) { return 0 }
+            }
+            while dates.contains(fmt.string(from: checkDate)) {
+                streak += 1
+                checkDate = cal.date(byAdding: .day, value: -1, to: checkDate)!
+            }
+            return streak
+        }
+    }
 
     var body: some View {
         VStack(spacing: 10) {
-            // Header
-            HStack(spacing: 6) {
-                Image(systemName: "diamond.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(accent)
-                Text("Token Bar")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundStyle(brightText)
-                Spacer()
-                if let updated = reader.lastUpdated {
-                    Text(updated, style: .time)
-                        .font(.system(size: 10))
-                        .foregroundStyle(dimText)
-                }
-            }
-            .padding(.bottom, 2)
+            // Header with provider toggle
+            headerRow
 
             // Today card
             todayCard
@@ -52,14 +224,21 @@ struct MenuBarView: View {
             // All Time card
             allTimeCard
 
-            // Model breakdown with cost
+            // Model breakdown
             modelCard
 
             // Heatmap
             heatmapCard
 
-            // Peak hours chart
-            peakHoursCard
+            // Peak hours chart (Claude Code only — OpenCode doesn't have hourCounts)
+            if provider != .openCode {
+                peakHoursCard
+            }
+
+            // Connection status for OpenCode
+            if provider != .claudeCode {
+                openCodeStatusRow
+            }
 
             // Actions
             actionsRow
@@ -68,6 +247,63 @@ struct MenuBarView: View {
         .frame(width: 420)
         .background(bg)
         .preferredColorScheme(.dark)
+        .onAppear {
+            if provider != .claudeCode && openCodeReader.stats == nil {
+                openCodeReader.load()
+            }
+        }
+    }
+
+    // MARK: - Header
+
+    private var headerRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "diamond.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(activeAccent)
+            Text("Token Bar")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(brightText)
+            Spacer()
+
+            // Provider picker
+            providerPicker
+
+            if let updated = provider == .openCode ? openCodeReader.lastUpdated : reader.lastUpdated {
+                Text(updated, style: .time)
+                    .font(.system(size: 10))
+                    .foregroundStyle(dimText)
+            }
+        }
+        .padding(.bottom, 2)
+    }
+
+    private var providerPicker: some View {
+        HStack(spacing: 0) {
+            ForEach(StatsProvider.allCases, id: \.rawValue) { p in
+                Button {
+                    provider = p
+                    if p != .claudeCode && openCodeReader.stats == nil {
+                        openCodeReader.load()
+                    }
+                } label: {
+                    Text(p == .claudeCode ? "Claude" : p == .openCode ? "Open" : "All")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(provider == p ? brightText : dimText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            provider == p
+                                ? (p == .openCode ? openCodeAccent.opacity(0.3) : accent.opacity(0.3))
+                                : Color.clear,
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Color.white.opacity(0.06), in: Capsule())
     }
 
     // MARK: - Today
@@ -77,9 +313,9 @@ struct MenuBarView: View {
             HStack {
                 Label("Today", systemImage: "clock")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(activeAccent)
                     .textCase(.uppercase)
-                if reader.liveTokens.messageCount > 0 {
+                if provider != .openCode && reader.liveTokens.messageCount > 0 {
                     HStack(spacing: 3) {
                         Circle()
                             .fill(green)
@@ -93,7 +329,7 @@ struct MenuBarView: View {
                     .background(green.opacity(0.1), in: Capsule())
                 }
                 Spacer()
-                if let model = reader.todayTopModel {
+                if let model = activeTodayTopModel {
                     Text(TokenFormatter.friendlyModelName(model))
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(warm)
@@ -105,17 +341,17 @@ struct MenuBarView: View {
 
             HStack(spacing: 0) {
                 metricTile(
-                    value: TokenFormatter.format(reader.todayTotalTokens),
+                    value: TokenFormatter.format(activeTodayTokens),
                     label: "Tokens",
-                    color: accent
+                    color: activeAccent
                 )
                 metricTile(
-                    value: TokenFormatter.formatWithCommas(reader.todayMessages),
+                    value: TokenFormatter.formatWithCommas(activeTodayMessages),
                     label: "Messages",
                     color: bodyText
                 )
                 metricTile(
-                    value: "\(reader.todaySessions)",
+                    value: "\(activeTodaySessions)",
                     label: "Sessions",
                     color: bodyText
                 )
@@ -133,12 +369,12 @@ struct MenuBarView: View {
                 insightPill(
                     icon: "flame.fill",
                     iconColor: Color(red: 1.0, green: 0.45, blue: 0.2),
-                    value: "\(reader.currentStreak)",
+                    value: "\(activeStreak)",
                     label: "day streak"
                 )
 
-                // Peak hour
-                if let peak = reader.peakHour {
+                // Peak hour (Claude Code only)
+                if provider != .openCode, let peak = reader.peakHour {
                     insightPill(
                         icon: "clock.fill",
                         iconColor: warm,
@@ -147,14 +383,14 @@ struct MenuBarView: View {
                     )
                 }
 
-                // Total cost (clickable)
+                // Total cost
                 Button {
                     showCostBreakdown.toggle()
                 } label: {
                     insightPill(
                         icon: "dollarsign.circle.fill",
                         iconColor: green,
-                        value: TokenFormatter.formatCost(reader.estimatedTotalCost),
+                        value: TokenFormatter.formatCost(activeEstimatedCost),
                         label: showCostBreakdown ? "tap to hide" : "tap for detail"
                     )
                 }
@@ -171,7 +407,7 @@ struct MenuBarView: View {
     // MARK: - Cost Breakdown
 
     private var costBreakdownCard: some View {
-        let breakdowns = reader.detailedCostBreakdown
+        let breakdowns = activeCostBreakdown
 
         return VStack(spacing: 8) {
             HStack {
@@ -180,7 +416,9 @@ struct MenuBarView: View {
                     .foregroundStyle(green)
                     .textCase(.uppercase)
                 Spacer()
-                Text("Estimated · Anthropic API pricing")
+                Text(provider == .claudeCode ? "Estimated · Anthropic API pricing" :
+                     provider == .openCode ? "Estimated · Moonshot API pricing" :
+                     "Estimated · API pricing")
                     .font(.system(size: 8))
                     .foregroundStyle(dimText)
             }
@@ -229,7 +467,7 @@ struct MenuBarView: View {
                 Text("Total:")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(bodyText)
-                Text(TokenFormatter.formatCost(reader.estimatedTotalCost))
+                Text(TokenFormatter.formatCost(activeEstimatedCost))
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                     .foregroundStyle(green)
             }
@@ -264,29 +502,27 @@ struct MenuBarView: View {
             HStack {
                 Label("All Time", systemImage: "infinity")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(activeAccent)
                     .textCase(.uppercase)
                 Spacer()
             }
 
             HStack(spacing: 0) {
                 metricTile(
-                    value: TokenFormatter.format(reader.allTimeTokens),
+                    value: TokenFormatter.format(activeAllTimeTokens),
                     label: "Tokens",
-                    color: accent
+                    color: activeAccent
                 )
-                if let stats = reader.stats {
-                    metricTile(
-                        value: TokenFormatter.formatWithCommas(stats.totalMessages),
-                        label: "Messages",
-                        color: bodyText
-                    )
-                    metricTile(
-                        value: "\(stats.totalSessions)",
-                        label: "Sessions",
-                        color: bodyText
-                    )
-                }
+                metricTile(
+                    value: TokenFormatter.formatWithCommas(activeTotalMessages),
+                    label: "Messages",
+                    color: bodyText
+                )
+                metricTile(
+                    value: "\(activeTotalSessions)",
+                    label: "Sessions",
+                    color: bodyText
+                )
             }
         }
         .cardStyle(cardBg)
@@ -299,13 +535,13 @@ struct MenuBarView: View {
             HStack {
                 Label("By Model", systemImage: "cpu")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(activeAccent)
                     .textCase(.uppercase)
                 Spacer()
             }
 
-            let breakdown = reader.modelBreakdown
-            let costBreakdown = Dictionary(uniqueKeysWithValues: reader.costByModel.map { ($0.model, $0.cost) })
+            let breakdown = activeModelBreakdown
+            let costBreakdown = Dictionary(uniqueKeysWithValues: activeCostByModel.map { ($0.model, $0.cost) })
             let maxTokens = breakdown.first?.tokens ?? 1
 
             ForEach(breakdown, id: \.model) { entry in
@@ -327,10 +563,12 @@ struct MenuBarView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(bodyText)
                 Spacer()
-                Text(TokenFormatter.formatCost(cost))
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(green.opacity(0.8))
-                    .padding(.trailing, 6)
+                if cost > 0 {
+                    Text(TokenFormatter.formatCost(cost))
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(green.opacity(0.8))
+                        .padding(.trailing, 6)
+                }
                 Text(TokenFormatter.format(tokens))
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundStyle(brightText)
@@ -343,7 +581,7 @@ struct MenuBarView: View {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(
                             LinearGradient(
-                                colors: [accentDim, accent],
+                                colors: [activeAccent.opacity(0.6), activeAccent],
                                 startPoint: .leading,
                                 endPoint: .trailing
                             )
@@ -362,14 +600,14 @@ struct MenuBarView: View {
             HStack {
                 Label("Activity", systemImage: "square.grid.3x3.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(accent)
+                    .foregroundStyle(activeAccent)
                     .textCase(.uppercase)
                 Spacer()
             }
 
             let numWeeks = 16
-            let tokenMap = reader.dailyTokenMap
-            let activityMap = reader.dailyActivityMap
+            let tokenMap = activeDailyTokenMap
+            let activityMap = activeDailyActivityMap
             let weeks = reader.heatmapWeeks(weeks: numWeeks)
             let allValues = tokenMap.values.filter { $0 > 0 }
             let maxVal = allValues.max() ?? 1
@@ -523,6 +761,45 @@ struct MenuBarView: View {
         .cardStyle(cardBg)
     }
 
+    // MARK: - OpenCode Status
+
+    private var openCodeStatusRow: some View {
+        HStack(spacing: 6) {
+            if openCodeReader.isLoading {
+                ProgressView()
+                    .controlSize(.mini)
+                Text("Connecting to \(openCodeReader.host)...")
+                    .font(.system(size: 10))
+                    .foregroundStyle(dimText)
+            } else if let error = openCodeReader.error {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+                Text(error)
+                    .font(.system(size: 9))
+                    .foregroundStyle(dimText)
+                    .lineLimit(1)
+            } else if openCodeReader.stats != nil {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10))
+                    .foregroundStyle(green)
+                Text("Connected to \(openCodeReader.host)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(dimText)
+            }
+            Spacer()
+            Button {
+                openCodeReader.load()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10))
+                    .foregroundStyle(dimText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 4)
+    }
+
     // MARK: - Actions
 
     private var actionsRow: some View {
@@ -530,6 +807,9 @@ struct MenuBarView: View {
             actionButton("arrow.clockwise", "Refresh") {
                 reader.load()
                 reader.scanLiveSessions()
+                if provider != .claudeCode {
+                    openCodeReader.load()
+                }
             }
 
             Toggle(isOn: $launchAtLogin) {
@@ -588,7 +868,7 @@ struct MenuBarView: View {
         VStack(spacing: 1) {
             Text(value)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(accent)
+                .foregroundStyle(activeAccent)
             Text(label)
                 .font(.system(size: 8, weight: .medium))
                 .foregroundStyle(dimText)
@@ -636,7 +916,7 @@ struct MenuBarView: View {
                 RoundedRectangle(cornerRadius: 2)
                     .strokeBorder(
                         isHovered ? brightText.opacity(0.9) :
-                        isToday ? accent.opacity(0.8) :
+                        isToday ? activeAccent.opacity(0.8) :
                         (isFuture ? Color.clear : Color.white.opacity(0.04)),
                         lineWidth: isHovered ? 1.5 : (isToday ? 1.5 : 0.5)
                     )
@@ -653,6 +933,16 @@ struct MenuBarView: View {
         else if intensity < 0.4 { level = 0.5 }
         else if intensity < 0.7 { level = 0.75 }
         else { level = 1.0 }
+
+        if provider == .openCode {
+            // Orange heatmap for OpenCode
+            return Color(
+                red: 0.6 + 0.4 * level,
+                green: 0.3 + 0.2 * level,
+                blue: 0.1 + 0.1 * level
+            ).opacity(0.3 + 0.7 * level)
+        }
+
         return Color(
             red: 0.2 + 0.2 * level,
             green: 0.35 + 0.3 * level,
