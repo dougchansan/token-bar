@@ -558,13 +558,6 @@ struct MenuBarView: View {
 
             Spacer()
 
-            Text("\u{2318}\u{21E7}T")
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(dimText)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 4))
-
             actionButton("power", "Quit") {
                 NSApplication.shared.terminate(nil)
             }
