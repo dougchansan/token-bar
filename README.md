@@ -11,6 +11,7 @@ A native macOS menu bar app for monitoring AI coding assistant token usage at a 
 ## Features
 
 - **Multi-Provider Support** — Toggle between Claude Code, OpenCode, or combined view
+- **Local + Remote** — Reads OpenCode data from this machine and remote machines via SSH, merged automatically
 - **Live Token Counting** — Scans active session files for real-time today stats, not just cached data
 - **Activity Heatmap** — 16-week GitHub-style calendar with hover tooltips showing per-day metrics
 - **Cost Estimation** — Calculates approximate USD spend per model using API pricing (click for full breakdown)
@@ -20,30 +21,65 @@ A native macOS menu bar app for monitoring AI coding assistant token usage at a 
 - **Launch at Login** — Toggle to start automatically on boot
 - **Dark Theme** — Designed to look clean alongside your menu bar
 
-## Providers
+## Requirements
 
-### Claude Code (Local)
+- macOS 14+
+- Swift 5.9+
+- Claude Code installed (`~/.claude/` directory)
+- For OpenCode: Python 3 (local and/or on remote machine)
 
-Reads from `~/.claude/stats-cache.json` and scans session JSONL files under `~/.claude/projects/` for live token counts.
+## Quick Start
+
+```bash
+git clone https://github.com/dougchansan/token-bar.git
+cd token-bar/TokenBar
+./build.sh
+open build/TokenBar.app
+```
+
+The app runs in the menu bar only (no dock icon). Click the `◆ Model | Tokens` label to open the panel.
+
+## Setup
+
+### Claude Code (works out of the box)
+
+If you have Claude Code installed, Token Bar reads from `~/.claude/stats-cache.json` and scans session JSONL files under `~/.claude/projects/` automatically. No configuration needed.
 
 - Models: Opus, Sonnet, Haiku (all versions)
-- Data: local only, polled every 30 seconds
+- Data: polled every 30 seconds, live session scanning for real-time counts
 
-### OpenCode (Remote via SSH)
+### OpenCode (local)
 
-Aggregates token usage from OpenCode's message storage on a remote machine via SSH. A Python script (`scripts/opencode-stats.py`) parses message JSON files under `~/.local/share/opencode/storage/message/` and returns aggregated stats.
+If you use [OpenCode](https://opencode.ai) on this Mac, Token Bar reads it automatically too.
 
-- Models: Kimi K2 Turbo, Kimi K2.5, Qwen3, Llama 3.1, DeepSeek, Devstral, and any other model used through OpenCode
-- Providers: Ollama (local), Moonshot AI, and others
-- Data: pulled on-demand via SSH, cached locally
+**1. Install OpenCode** (if not already installed)
 
-#### OpenCode Setup
+```bash
+npm install -g opencode-ai
+```
 
-OpenCode stores session data at `~/.local/share/opencode/storage/` on the machine where it runs. Token Bar pulls this data over SSH using a small Python script.
+**2. Use it with any provider** (Ollama, Moonshot/Kimi, etc.)
 
-**1. Configure the connection**
+```bash
+# Example: run with a local Ollama model
+ollama pull glm4
+opencode --model ollama/glm4
 
-Edit `TokenBar/TokenBar/OpenCodeReader.swift` and update the defaults at the top of `init()`:
+# Example: run with a built-in free model
+opencode --model opencode/kimi-k2.5-free
+```
+
+**3. Token Bar picks it up automatically**
+
+The app reads from `~/.local/share/opencode/` — supports both SQLite (v1.2+) and legacy JSON storage (v1.1.x). Click **Open** in the header to see your OpenCode stats.
+
+### OpenCode (remote machine via SSH)
+
+To also pull OpenCode stats from a remote machine (e.g., a Windows PC, Linux server, or GPU rig):
+
+**1. Configure the remote host**
+
+Edit `TokenBar/TokenBar/OpenCodeReader.swift` and update the defaults in `init()`:
 
 ```swift
 init(host: String = "YOUR_IP_OR_HOSTNAME",
@@ -51,7 +87,7 @@ init(host: String = "YOUR_IP_OR_HOSTNAME",
      scriptPath: String = "opencode-stats.py")
 ```
 
-**2. Set up SSH key auth** (if not already done)
+**2. Set up SSH key auth** (passwordless login required)
 
 ```bash
 # Generate a key if you don't have one
@@ -59,10 +95,8 @@ ssh-keygen -t ed25519
 
 # Copy it to the remote machine
 ssh-copy-id user@your-host
-```
 
-Verify passwordless login works:
-```bash
+# Verify it works
 ssh user@your-host "echo connected"
 ```
 
@@ -78,9 +112,9 @@ scp scripts/opencode-stats.py user@your-host:opencode-stats.py
 ssh user@your-host "python opencode-stats.py"
 ```
 
-You should see JSON output with your OpenCode token usage. If you see `{"error": "no opencode data"}`, OpenCode hasn't been used on that machine yet.
+You should see JSON output with token usage. If you see `{"error": "no opencode data"}`, OpenCode hasn't been used on that machine yet.
 
-**5. Rebuild the app**
+**5. Rebuild and launch**
 
 ```bash
 cd TokenBar
@@ -88,43 +122,21 @@ cd TokenBar
 open build/TokenBar.app
 ```
 
-Click **Open** in the header to see your OpenCode stats.
+Local and remote data are merged automatically. The status bar shows "Local + 10.0.0.50" when both sources are connected.
 
-> **Note:** The remote machine needs Python 3 installed. OpenCode supports any LLM provider (Ollama, Moonshot/Kimi, OpenAI, etc.) — the aggregation script picks up all of them automatically. Local Ollama models show $0 cost; API-based models (Kimi K2 Turbo, K2.5) show estimated costs.
+> **Note:** The aggregation script (`scripts/opencode-stats.py`) supports both SQLite (OpenCode v1.2+) and legacy JSON (v1.1.x) storage. It detects the format automatically. The remote machine needs Python 3.
+
+### Disabling remote / local
+
+- **No remote machine?** Leave the default host — if SSH fails, the app gracefully falls back to local-only data.
+- **No local OpenCode?** That's fine too — remote-only works. Install OpenCode only if you want to track local usage.
 
 ### Provider Toggle
 
 Click **Claude** / **Open** / **All** in the header to switch views:
 - **Claude** — Local Claude Code stats only
-- **Open** — Remote OpenCode stats only (SSHes to pull data)
-- **All** — Merged view combining both sources
-
-## Requirements
-
-- macOS 14+
-- Swift 5.9+
-- Claude Code installed (`~/.claude/` directory)
-- For OpenCode: SSH access to the remote machine with Python 3
-
-## Build & Run
-
-```bash
-cd TokenBar
-./build.sh
-open build/TokenBar.app
-```
-
-Or manually:
-
-```bash
-cd TokenBar
-swift build
-mkdir -p build/TokenBar.app/Contents/MacOS
-cp .build/debug/TokenBar build/TokenBar.app/Contents/MacOS/
-open build/TokenBar.app
-```
-
-The app runs in the menu bar only (no dock icon). Click the `◆ Model | Tokens` label to open the panel.
+- **Open** — OpenCode stats (local + remote merged)
+- **All** — Everything combined from all sources
 
 ## Menu Bar Display
 
@@ -160,7 +172,7 @@ Estimated costs are computed from token counts using published API pricing:
 | **Kimi K2 Turbo** | $1.15/M | $8.00/M | $0.15/M |
 | **Kimi K2.5** | $0.60/M | $3.00/M | $0.10/M |
 
-Local Ollama models (Qwen, Llama, etc.) show $0 — they're free.
+Local Ollama models (GLM-4, Qwen, Llama, Mistral, etc.) show $0 — they're free.
 
 Click the cost pill in the app for a per-model line-by-line breakdown.
 
@@ -170,7 +182,8 @@ Click the cost pill in the app for a per-model line-by-line breakdown.
 - **No external dependencies** — pure Swift + AppKit/SwiftUI
 - Polls `stats-cache.json` every 30 seconds (skips re-parse if file unchanged)
 - Scans session JSONL files for live today metrics
-- SSH + Python script for remote OpenCode data aggregation
+- Python script for OpenCode data aggregation (local + SSH)
+- Merges local and remote OpenCode data automatically
 - Background-only app (`LSUIElement = true`)
 
 ## License

@@ -783,7 +783,7 @@ struct MenuBarView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 10))
                     .foregroundStyle(green)
-                Text("Connected to \(openCodeReader.host)")
+                Text(openCodeReader.connectionInfo)
                     .font(.system(size: 10))
                     .foregroundStyle(dimText)
             }
