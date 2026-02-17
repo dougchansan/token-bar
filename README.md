@@ -39,17 +39,58 @@ Aggregates token usage from OpenCode's message storage on a remote machine via S
 
 #### OpenCode Setup
 
-1. Copy the aggregation script to your remote machine:
-   ```bash
-   scp scripts/opencode-stats.py user@your-host:opencode-stats.py
-   ```
+OpenCode stores session data at `~/.local/share/opencode/storage/` on the machine where it runs. Token Bar pulls this data over SSH using a small Python script.
 
-2. Ensure SSH key auth works without a password:
-   ```bash
-   ssh user@your-host "python opencode-stats.py"
-   ```
+**1. Configure the connection**
 
-3. The app defaults to `10.0.0.50` — edit `OpenCodeReader.swift` to change the host.
+Edit `TokenBar/TokenBar/OpenCodeReader.swift` and update the defaults at the top of `init()`:
+
+```swift
+init(host: String = "YOUR_IP_OR_HOSTNAME",
+     user: String = "YOUR_USERNAME",
+     scriptPath: String = "opencode-stats.py")
+```
+
+**2. Set up SSH key auth** (if not already done)
+
+```bash
+# Generate a key if you don't have one
+ssh-keygen -t ed25519
+
+# Copy it to the remote machine
+ssh-copy-id user@your-host
+```
+
+Verify passwordless login works:
+```bash
+ssh user@your-host "echo connected"
+```
+
+**3. Deploy the aggregation script**
+
+```bash
+scp scripts/opencode-stats.py user@your-host:opencode-stats.py
+```
+
+**4. Test it**
+
+```bash
+ssh user@your-host "python opencode-stats.py"
+```
+
+You should see JSON output with your OpenCode token usage. If you see `{"error": "no opencode data"}`, OpenCode hasn't been used on that machine yet.
+
+**5. Rebuild the app**
+
+```bash
+cd TokenBar
+./build.sh
+open build/TokenBar.app
+```
+
+Click **Open** in the header to see your OpenCode stats.
+
+> **Note:** The remote machine needs Python 3 installed. OpenCode supports any LLM provider (Ollama, Moonshot/Kimi, OpenAI, etc.) — the aggregation script picks up all of them automatically. Local Ollama models show $0 cost; API-based models (Kimi K2 Turbo, K2.5) show estimated costs.
 
 ### Provider Toggle
 
