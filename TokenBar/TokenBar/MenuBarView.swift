@@ -768,7 +768,7 @@ struct MenuBarView: View {
             if openCodeReader.isLoading {
                 ProgressView()
                     .controlSize(.mini)
-                Text("Connecting to \(openCodeReader.host)...")
+                Text("Connecting...")
                     .font(.system(size: 10))
                     .foregroundStyle(dimText)
             } else if let error = openCodeReader.error {

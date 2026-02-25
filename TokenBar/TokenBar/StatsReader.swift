@@ -6,9 +6,12 @@ final class StatsReader: ObservableObject {
     @Published var stats: StatsCache?
     @Published var lastUpdated: Date?
     @Published var liveTokens: LiveTokens = LiveTokens()
+    @Published var remoteConnectedHost: String?
 
     private let filePath: String
     private let claudeDir: String
+    private let remoteHosts: [String]
+    private let remoteUser: String
     private var timer: Timer?
     private var lastModDate: Date?
 
@@ -21,12 +24,16 @@ final class StatsReader: ObservableObject {
         var modelTokens: [String: Int] = [:]
     }
 
-    init() {
+    init(remoteHosts: [String] = ["100.118.1.64", "radio"],
+         remoteUser: String = "douglaswhittingham") {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         self.claudeDir = "\(home)/.claude"
         self.filePath = "\(claudeDir)/stats-cache.json"
+        self.remoteHosts = remoteHosts
+        self.remoteUser = remoteUser
         load()
         scanLiveSessions()
+        loadRemote()
         startPolling()
     }
 
@@ -40,13 +47,148 @@ final class StatsReader: ObservableObject {
             if let modDate, modDate == lastModDate { return }
             lastModDate = modDate
 
-            let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
-            let decoded = try JSONDecoder().decode(StatsCache.self, from: data)
-            stats = decoded
+            let localData = try Data(contentsOf: URL(fileURLWithPath: filePath))
+            let localStats = try JSONDecoder().decode(StatsCache.self, from: localData)
+
+            // Merge with remote if available
+            if let remote = remoteStats {
+                stats = Self.mergeStats(local: localStats, remote: remote)
+            } else {
+                stats = localStats
+            }
             lastUpdated = Date()
         } catch {
             print("StatsReader error: \(error)")
         }
+    }
+
+    // MARK: - Remote stats fetching
+
+    private var remoteStats: StatsCache?
+
+    func loadRemote() {
+        let hosts = remoteHosts
+        let user = remoteUser
+
+        Task.detached {
+            var result: StatsCache?
+            var successHost: String?
+
+            for host in hosts {
+                if let stats = Self.fetchRemoteStats(host: host, user: user) {
+                    result = stats
+                    successHost = host
+                    break
+                }
+            }
+
+            let resolvedHost = successHost
+            let resolvedStats = result
+
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.remoteStats = resolvedStats
+                self.remoteConnectedHost = resolvedHost
+                // Re-merge local + remote
+                self.lastModDate = nil  // force reload
+                self.load()
+            }
+        }
+    }
+
+    private nonisolated static func fetchRemoteStats(host: String, user: String) -> StatsCache? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = [
+            "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes",
+            "\(user)@\(host)",
+            "type %USERPROFILE%\\.claude\\stats-cache.json"
+        ]
+
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = errPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+
+            return try? JSONDecoder().decode(StatsCache.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Merge local + remote StatsCache
+
+    nonisolated static func mergeStats(local: StatsCache, remote: StatsCache) -> StatsCache {
+        // Merge dailyActivity
+        var activityMap: [String: DailyActivity] = [:]
+        for entry in local.dailyActivity { activityMap[entry.date] = entry }
+        for entry in remote.dailyActivity {
+            if let existing = activityMap[entry.date] {
+                activityMap[entry.date] = DailyActivity(
+                    date: entry.date,
+                    messageCount: existing.messageCount + entry.messageCount,
+                    sessionCount: existing.sessionCount + entry.sessionCount,
+                    toolCallCount: (existing.toolCallCount ?? 0) + (entry.toolCallCount ?? 0)
+                )
+            } else {
+                activityMap[entry.date] = entry
+            }
+        }
+        let dailyActivity = activityMap.values.sorted { $0.date < $1.date }
+
+        // Merge dailyModelTokens
+        var tokenMap: [String: [String: Int]] = [:]
+        for entry in local.dailyModelTokens { tokenMap[entry.date] = entry.tokensByModel }
+        for entry in remote.dailyModelTokens {
+            var existing = tokenMap[entry.date] ?? [:]
+            for (model, tokens) in entry.tokensByModel {
+                existing[model, default: 0] += tokens
+            }
+            tokenMap[entry.date] = existing
+        }
+        let dailyModelTokens = tokenMap.sorted { $0.key < $1.key }
+            .map { DailyModelTokens(date: $0.key, tokensByModel: $0.value) }
+
+        // Merge modelUsage
+        var usageMap = local.modelUsage
+        for (model, usage) in remote.modelUsage {
+            if let existing = usageMap[model] {
+                usageMap[model] = ModelUsage(
+                    inputTokens: existing.inputTokens + usage.inputTokens,
+                    outputTokens: existing.outputTokens + usage.outputTokens,
+                    cacheReadInputTokens: existing.cacheReadInputTokens + usage.cacheReadInputTokens,
+                    cacheCreationInputTokens: existing.cacheCreationInputTokens + usage.cacheCreationInputTokens
+                )
+            } else {
+                usageMap[model] = usage
+            }
+        }
+
+        // Merge hourCounts
+        var hourMap = local.hourCounts ?? [:]
+        for (hour, count) in remote.hourCounts ?? [:] {
+            hourMap[hour, default: 0] += count
+        }
+
+        return StatsCache(
+            version: local.version,
+            lastComputedDate: max(local.lastComputedDate, remote.lastComputedDate),
+            dailyActivity: dailyActivity,
+            dailyModelTokens: dailyModelTokens,
+            modelUsage: usageMap,
+            totalSessions: local.totalSessions + remote.totalSessions,
+            totalMessages: local.totalMessages + remote.totalMessages,
+            hourCounts: hourMap.isEmpty ? nil : hourMap
+        )
     }
 
     // MARK: - Live session scanning
@@ -137,11 +279,19 @@ final class StatsReader: ObservableObject {
         }
     }
 
+    private var pollCount = 0
+
     private func startPolling() {
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.load()
                 self?.scanLiveSessions()
+                // Refresh remote stats every 4th poll (~2 minutes)
+                self?.pollCount += 1
+                if self?.pollCount ?? 0 >= 4 {
+                    self?.pollCount = 0
+                    self?.loadRemote()
+                }
             }
         }
     }

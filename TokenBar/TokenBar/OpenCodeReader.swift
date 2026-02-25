@@ -8,20 +8,21 @@ final class OpenCodeReader: ObservableObject {
     @Published var isLoading = false
     @Published var error: String?
 
-    // Remote SSH target
-    let host: String
+    // Remote SSH targets (tried in order)
+    let hosts: [String]
     let user: String
     let scriptPath: String
+    @Published var connectedHost: String?
 
     // Local paths
     let localScriptPath: String
 
     private var timer: Timer?
 
-    init(host: String = "10.0.0.50",
+    init(hosts: [String] = ["10.0.0.50", "100.118.1.64", "radio"],
          user: String = "douglaswhittingham",
          scriptPath: String = "opencode-stats.py") {
-        self.host = host
+        self.hosts = hosts
         self.user = user
         self.scriptPath = scriptPath
 
@@ -42,16 +43,32 @@ final class OpenCodeReader: ObservableObject {
         isLoading = true
         error = nil
 
-        Task.detached { [host, user, scriptPath, localScriptPath] in
-            // Run local and remote in parallel, merge results
+        Task.detached { [hosts, user, scriptPath, localScriptPath] in
+            // Run local fetch
             let localResult = Self.runLocal(scriptPath: localScriptPath)
-            let remoteResult = Self.runSSH(host: host, user: user, scriptPath: scriptPath)
+
+            // Try each remote host in order, use first success
+            var remoteResult: Result<OpenCodeStats, Error> = .failure(
+                NSError(domain: "OpenCodeReader", code: 0,
+                        userInfo: [NSLocalizedDescriptionKey: "No remote hosts configured"]))
+            var successHost: String?
+            for host in hosts {
+                let result = Self.runSSH(host: host, user: user, scriptPath: scriptPath)
+                if case .success = result {
+                    remoteResult = result
+                    successHost = host
+                    break
+                }
+                remoteResult = result
+            }
 
             let merged = Self.merge(local: localResult, remote: remoteResult)
+            let resolvedHost = successHost
 
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isLoading = false
+                self.connectedHost = resolvedHost
                 switch merged {
                 case .success(let stats):
                     self.stats = stats
@@ -358,12 +375,12 @@ final class OpenCodeReader: ObservableObject {
             FileManager.default.homeDirectoryForCurrentUser.path + "/.local/share/opencode/opencode.db")
             || FileManager.default.fileExists(atPath:
             FileManager.default.homeDirectoryForCurrentUser.path + "/.local/share/opencode/storage/message")
-        let hasRemote = stats?.totalMessages ?? 0 > 0
+        let remoteHost = connectedHost ?? hosts.first ?? "remote"
 
-        if hasLocal && hasRemote {
-            return "Local + \(host)"
-        } else if hasRemote {
-            return host
+        if hasLocal && connectedHost != nil {
+            return "Local + \(remoteHost)"
+        } else if connectedHost != nil {
+            return remoteHost
         } else if hasLocal {
             return "Local"
         }
