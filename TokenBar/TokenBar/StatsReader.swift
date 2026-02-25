@@ -82,6 +82,18 @@ final class StatsReader: ObservableObject {
                 }
             }
 
+            // Also fetch live stats (recent data not yet in stats-cache)
+            var liveData: RemoteLiveData?
+            if let host = successHost {
+                liveData = Self.fetchRemoteLiveStats(host: host, user: user)
+            }
+
+            // Supplement cache with live data
+            if var stats = result, let live = liveData {
+                stats = Self.supplementWithLive(cache: stats, live: live)
+                result = stats
+            }
+
             let resolvedHost = successHost
             let resolvedStats = result
 
@@ -94,6 +106,85 @@ final class StatsReader: ObservableObject {
                 self.load()
             }
         }
+    }
+
+    struct RemoteLiveData: Decodable {
+        let dailyActivity: [DailyActivity]
+        let dailyModelTokens: [DailyModelTokens]
+    }
+
+    private nonisolated static func fetchRemoteLiveStats(host: String, user: String) -> RemoteLiveData? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = [
+            "-o", "ConnectTimeout=10",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "BatchMode=yes",
+            "\(user)@\(host)",
+            "python claude-live-stats.py"
+        ]
+
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = errPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard process.terminationStatus == 0, !data.isEmpty else { return nil }
+
+            return try? JSONDecoder().decode(RemoteLiveData.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Merge live-scanned data into the cached stats (for dates after lastComputedDate)
+    private nonisolated static func supplementWithLive(cache: StatsCache, live: RemoteLiveData) -> StatsCache {
+        guard !live.dailyActivity.isEmpty else { return cache }
+
+        var activityMap: [String: DailyActivity] = [:]
+        for entry in cache.dailyActivity { activityMap[entry.date] = entry }
+        for entry in live.dailyActivity {
+            if activityMap[entry.date] == nil {
+                // Only add dates not already in cache
+                activityMap[entry.date] = entry
+            }
+        }
+        let dailyActivity = activityMap.values.sorted { $0.date < $1.date }
+
+        var tokenMap: [String: [String: Int]] = [:]
+        for entry in cache.dailyModelTokens { tokenMap[entry.date] = entry.tokensByModel }
+        for entry in live.dailyModelTokens {
+            if tokenMap[entry.date] == nil {
+                tokenMap[entry.date] = entry.tokensByModel
+            }
+        }
+        let dailyModelTokens = tokenMap.sorted { $0.key < $1.key }
+            .map { DailyModelTokens(date: $0.key, tokensByModel: $0.value) }
+
+        // Add live message/session counts to totals (for dates not in original cache)
+        let cachedDates = Set(cache.dailyActivity.map(\.date))
+        let liveExtraMsgs = live.dailyActivity
+            .filter { !cachedDates.contains($0.date) }
+            .reduce(0) { $0 + $1.messageCount }
+        let liveExtraSessions = live.dailyActivity
+            .filter { !cachedDates.contains($0.date) }
+            .reduce(0) { $0 + $1.sessionCount }
+
+        return StatsCache(
+            version: cache.version,
+            lastComputedDate: cache.lastComputedDate,
+            dailyActivity: dailyActivity,
+            dailyModelTokens: dailyModelTokens,
+            modelUsage: cache.modelUsage,
+            totalSessions: cache.totalSessions + liveExtraSessions,
+            totalMessages: cache.totalMessages + liveExtraMsgs,
+            hourCounts: cache.hourCounts
+        )
     }
 
     private nonisolated static func fetchRemoteStats(host: String, user: String) -> StatsCache? {
