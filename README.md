@@ -3,14 +3,15 @@
 A native macOS menu bar app for monitoring AI coding assistant token usage at a glance.
 
 <p align="center">
-  <img src="screenshots/panel.png" alt="Token Bar — Claude Code" width="420">
-  &nbsp;&nbsp;
-  <img src="screenshots/opencode-panel.png" alt="Token Bar — OpenCode" width="420">
+  <img src="screenshots/panel.png" alt="Token Bar — Claude Code" width="320">
+  <img src="screenshots/opencode-panel.png" alt="Token Bar — OpenCode" width="320">
+  <img src="screenshots/all-panel.png" alt="Token Bar — All Providers" width="320">
 </p>
 
 ## Features
 
 - **Multi-Provider Support** — Toggle between Claude Code, OpenCode, or combined view
+- **Multi-Device** — Aggregates Claude Code stats from multiple machines via SSH over Tailscale/LAN
 - **Local + Remote** — Reads OpenCode data from this machine and remote machines via SSH, merged automatically
 - **Live Token Counting** — Scans active session files for real-time today stats, not just cached data
 - **Activity Heatmap** — 16-week GitHub-style calendar with hover tooltips showing per-day metrics
